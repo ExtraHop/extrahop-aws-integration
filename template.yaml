@@ -7,9 +7,10 @@ Metadata:
     Description: ExtraHop Reveal(x) integration for AWS
     Author: ExtraHop Networks
     SpdxLicenseId: MIT
-    LicenseUrl: LICENSE.txt
+    LicenseUrl: LICENSE
     ReadmeUrl: README.md
     SemanticVersion: 1.0.0
+    SourceCodeUrl: https://github.com/ExtraHop/extrahop-aws-integration
 # More info about Globals: https://github.com/awslabs/serverless-application-model/blob/master/docs/globals.rst
 Globals:
   Function:
