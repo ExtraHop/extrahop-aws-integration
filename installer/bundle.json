@@ -1,0 +1,32 @@
+{
+    ".meta": {
+        "comment": "AWS Integration for Reveal(x)",
+        "created": 1585341143,
+        "name": "AWS Integration",
+        "version": "8.0.0.2337",
+        "version_min": "8.0"
+    },
+    "Trigger": [{
+            "apply_all": false,
+            "author": "ExtraHop",
+            "comment": "Publishes detection data to an SNS topic.",
+            "debug": false,
+            "disabled": false,
+            "events": "[\"DETECTION_UPDATE\"]",
+            "hints": "{}",
+            "name": "AWS Integration: Detections Publisher",
+            "script": "// Title: AWS Integration: Detections Publisher\n// Author: ExtraHop Networks\n// Description:\n//    Publishes detection data to an SNS topic.\n// Events: DETECTION_UPDATE\n\n//\n// User modifiable variables\n//\nconst SNS_ODS_TARGET = \"sns\";\nconst SNS_TOPIC_ARN = \"replace_this_string_with_topic_arn\";\n/******************************************************************************/\n/** This an ExtraHop Supported Bundle. Make NO MODIFICATIONS below this line **/\n/******************************************************************************/\n\nconst riskScore = Detection.riskScore ? Detection.riskScore : 0;\nconst messageAttributes = `MessageAttributes.entry.1.Name=riskScore&MessageAttributes.entry.1.Value.DataType=Number&MessageAttributes.entry.1.Value.StringValue=${riskScore}`\nlet detectionData = {\n    \"applianceId\": System.uuid,\n    \"categories\": Detection.categories,\n    \"description\": Detection.description,\n    \"endTime\": Detection.endTime,\n    \"id\": Detection.id,\n    \"isCustom\": Detection.isCustom,\n    \"participants\": Detection.participants,\n    \"riskScore\": Detection.riskScore,\n    \"startTime\": Detection.startTime,\n    \"title\": Detection.title,\n    \"type\": Detection.type,\n    \"updateTime\": Detection.updateTime\n};\nconst payload = `Action=Publish&TopicArn=${SNS_TOPIC_ARN}&Version=2010-03-31&Message=${JSON.stringify(detectionData)}&${messageAttributes}`;\nRemote.HTTP(SNS_ODS_TARGET).post({\n    path: \"/\",\n    payload: payload,\n});"
+        },
+        {
+            "apply_all": false,
+            "author": "ExtraHop",
+            "comment": "Publishes device info to SNS topic when ExtraHop discovers a new device.",
+            "debug": false,
+            "disabled": false,
+            "events": "[\"NEW_DEVICE\", \"SESSION_EXPIRE\"]",
+            "hints": "{}",
+            "name": "AWS Integration: New Device Publisher",
+            "script": "// Title: AWS Integration: New Device Publisher\n// Author: ExtraHop Networks\n// Description:\n//    Publishes device info to SNS topic when ExtraHop discovers a new device.\n// Events: NEW_DEVICE, SESSION_EXPIRE\n\n//\n// User modifiable variables\n//\nconst SNS_ODS_TARGET = \"sns\";\nconst SNS_TOPIC_ARN = \"replace_this_string_with_topic_arn\";\nconst SESSION_KEY_HEAD = \"newdevice\";\nconst SESSION_KEY_EXPIRY = 300;\n/******************************************************************************/\n/** This an ExtraHop Supported Bundle. Make NO MODIFICATIONS below this line **/\n/******************************************************************************/\n\nif (event == \"NEW_DEVICE\") {\n    if (Discover.device) {\n        let device_json = JSON.stringify(Discover.device);\n        device_json[\"appliance_uuid\"] = System.uuid;\n        const session_key = `${SESSION_KEY_HEAD}:${Discover.device.id}`\n        Session.add(session_key, device_json, {\n            \"expire\": SESSION_KEY_EXPIRY,\n            \"notify\": true\n        })\n        \n    }\n} else if (event == \"SESSION_EXPIRE\") {\n    for (const key of Session.expiredKeys) {\n        if (key.name.startsWith(SESSION_KEY_HEAD)) {\n            const device_json = key.value;\n            const payload = `Action=Publish&TopicArn=${SNS_TOPIC_ARN}&Version=2010-03-31&Message=${device_json}`;\n            Remote.HTTP(SNS_ODS_TARGET).post({\n                path: \"/\",\n                payload: payload,\n            });\n        }\n    }\n}"
+        }
+    ]
+}

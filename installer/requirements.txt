@@ -1,0 +1,3 @@
+aws_secretsmanager_caching
+crhelper
+requests

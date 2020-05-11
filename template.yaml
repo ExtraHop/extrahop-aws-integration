@@ -1,0 +1,240 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: ExtraHop Reveal(x) integration for AWS
+Metadata:
+  AWS::ServerlessRepo::Application:
+    Name: extrahop-aws-integration
+    Description: ExtraHop Reveal(x) integration for AWS
+    Author: ExtraHop Networks
+    SpdxLicenseId: MIT
+    LicenseUrl: LICENSE.txt
+    ReadmeUrl: README.md
+    SemanticVersion: 1.0.0
+# More info about Globals: https://github.com/awslabs/serverless-application-model/blob/master/docs/globals.rst
+Globals:
+  Function:
+    Runtime: python3.8
+Parameters:
+  ExtraHopSecrets:
+    Description:
+      'Type a JSON-formatted string to specify key and value pairs of the
+      Reveal(x) system hostname or IP address and an API key generated on the
+      system. For example: {"revealx.example.com": "abcdef123abcdef",
+      "command.example.com": "456789fdb456789"}'
+    Type: String
+  LambdaSubnet:
+    Description: Select a private subnet for the lambda function to run in.
+    Type: "List<AWS::EC2::Subnet::Id>"
+  LambdaVPC:
+    Description: Select the VPC ID of the subnet selected above in the LambdaSubnet parameter.
+    Type: "AWS::EC2::VPC::Id"
+  ImportTags:
+    Description: Type a comma-separated list of AWS tags to import to the Reveal(x) system.
+    Default: ExtraHopQuarantine
+    Type: CommaDelimitedList
+  QuarantineRiskScore:
+    Description: 'Type the integer value for the desired risk score threshold. 
+    This value is associated with a subscription filter to the SNS topic for
+    Reveal(x) system detections. Detections with risk scores at or above this
+    value will run the quarantine Lambda function for detection participants. A
+    value of 100 effectively disables the subscription.'
+    Type: Number
+    Default: 90
+Resources:
+  # Shared extrahop.py layer
+  ExtraHopLibLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: extrahoplib
+      ContentUri: extrahoplib/
+      CompatibleRuntimes:
+        - python3.8
+  # Resources for ExtraHop bundle installer
+  ExtraHopBundleInstallFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Description: Install the AWS Integration bundle on the ExtraHop
+      CodeUri: installer
+      Handler: lambda_function.lambda_handler
+      Layers:
+        - !Ref ExtraHopLibLayer
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref ExtraHopLambdaSG
+        SubnetIds: !Ref LambdaSubnet
+      Policies:
+        - !Ref ExtraHopReadAPIKeyPolicy
+      Timeout: 60
+  ExtraHopCFCreateHook:
+    Type: Custom::BundleInstaller
+    Properties:
+      ServiceToken: !GetAtt ExtraHopBundleInstallFunction.Arn
+      NewDeviceARN: !Ref ExtraHopNewDeviceTopic
+      DetectionsARN: !Ref ExtraHopDetectionTopic
+      Region: !Ref AWS::Region
+  # Resources for ExtraHop device tagging
+  ExtraHopLambdaSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Default security group for ExtraHop integration lambda
+      VpcId: !Ref LambdaVPC
+      Tags:
+        - Key: Name
+          Value: ExtraHopLambdaSG
+  ExtraHopScheduledTagFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Description: Periodically tag all ExtraHop devices.
+      CodeUri: devicetagger
+      Handler: lambda_function.lambda_handler_scheduled
+      Layers:
+        - !Ref ExtraHopLibLayer
+      Events:
+        ExtraHopTagSchedule:
+          Type: Schedule
+          Properties:
+            Name: OneHourInterval
+            Description: Hourly intervals for ExtraHop tagging Lambda
+            Enabled: true
+            Schedule: rate(1 hour)
+      Environment:
+        Variables:
+          IMPORT_TAGS: !Join
+            - ","
+            - !Ref ImportTags
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref ExtraHopLambdaSG
+        SubnetIds: !Ref LambdaSubnet
+      Policies:
+        - AmazonEC2ReadOnlyAccess
+        - AWSLambdaVPCAccessExecutionRole
+        - !Ref ExtraHopReadAPIKeyPolicy
+      Timeout: 60
+  ExtraHopNewDeviceTagFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Description: Tag new ExtraHop devices.
+      CodeUri: devicetagger
+      Handler: lambda_function.lambda_handler_newdevice
+      Layers:
+        - !Ref ExtraHopLibLayer
+      Events:
+        IngestNewDevFromSNSTopic:
+          Type: SNS
+          Properties:
+            Topic: !Ref ExtraHopNewDeviceTopic
+      Environment:
+        Variables:
+          IMPORT_TAGS: !Join
+            - ","
+            - !Ref ImportTags
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref ExtraHopLambdaSG
+        SubnetIds: !Ref LambdaSubnet
+      Policies:
+        - AmazonEC2ReadOnlyAccess
+        - AWSLambdaVPCAccessExecutionRole
+        - !Ref ExtraHopReadAPIKeyPolicy
+      Timeout: 60
+  # Resources for Detection & Automated Remediation
+  ExtraHopDetectionTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: ExtraHop Detection Data
+      TopicName: ExtraHopDetectionTopic
+  ExtraHopNewDeviceTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: ExtraHop New Devices
+      TopicName: ExtraHopNewDevTopic
+  ExtraHopQuarantineLambdaPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: Policy - Quarantine Devices via ExtraHop
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - ec2:CreateSnapshots
+              - ec2:CreateTags
+              - ec2:DescribeInstances
+              - ec2:DescribeNetworkInterfaces
+              - ec2:DescribeVolumes
+              - ec2:ModifyInstanceAttribute
+              - ec2:ModifyNetworkInterfaceAttribute
+              - ec2:StopInstances
+            Resource: "arn:aws:ec2:::*"
+          - Effect: Allow
+            Action:
+              - autoscaling:DescribeAutoScalingGroups
+              - autoscaling:DetachInstances
+            Resource: "arn:aws:autoscaling:::*"
+          - Effect: Allow
+            Action:
+              - elasticloadbalancing:DescribeLoadBalancers
+              - elasticloadbalancing:DeregisterTargets
+            Resource: "arn:aws:elasticloadbalancing:::*"
+  ExtraHopQuarantineSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Quarantine security group for ExtraHop integration
+      VpcId: !Ref LambdaVPC
+      SecurityGroupIngress:
+        - CidrIp: 127.0.0.1/32
+          IpProtocol: "-1"
+      SecurityGroupEgress:
+        - CidrIp: 127.0.0.1/32
+          IpProtocol: "-1"
+      Tags:
+        - Key: Name
+          Value: ExtraHopQuarantineSG
+  ExtraHopQuarantineFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Description: Quarantine risky devices.
+      CodeUri: quarantine
+      Handler: lambda_function.lambda_handler
+      Events:
+        IngestFromSNSTopic:
+          Type: SNS
+          Properties:
+            Topic: !Ref ExtraHopDetectionTopic
+            FilterPolicy:
+              { "riskScore": [{ "numeric": [">=", !Ref QuarantineRiskScore] }] }
+      Environment:
+        Variables:
+          QUARANTINE_SECURITY_GROUP: !Ref ExtraHopQuarantineSG
+      Policies:
+        - !Ref ExtraHopQuarantineLambdaPolicy
+      Timeout: 360
+  # Secret store for API Keys
+  ExtraHopAPIKeyStore:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Description: API keys for ExtraHop Reveal(x) integration with AWS
+      Name: "extrahop/awsintegration"
+      SecretString: !Ref ExtraHopSecrets
+  ExtraHopReadAPIKeyPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: Policy - Quarantine Devices via ExtraHop
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - "secretsmanager:DescribeSecret"
+              - "secretsmanager:GetSecretValue"
+            Resource:
+              - !Ref ExtraHopAPIKeyStore
+
+Outputs:
+  DetectionTopicARN:
+    Description: ARN for Detection SNS Topic
+    Value: !Ref ExtraHopDetectionTopic
+  NewDeviceTaggingARN:
+    Description: ARN for new ExtraHop device tagging
+    Value: !Ref ExtraHopNewDeviceTopic
